@@ -1,0 +1,66 @@
+# config/settings.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+# Redaction Service Configuration
+# All values can be overridden with environment variables prefixed REDACT_
+# e.g., REDACT_PIPELINE_CONCURRENCY=16
+# ─────────────────────────────────────────────────────────────────────────────
+
+service:
+  name: llm-redaction-service
+  version: "1.0.0"
+
+api:
+  host: "0.0.0.0"
+  port: 8000
+  workers: 1                   # Increase for production (match CPU count)
+  reload: false                # Set true for development only
+
+pipeline:
+  concurrency: 8               # Max simultaneous redaction tasks
+  use_spacy: true              # Enable NER-based detection (requires model)
+  consistent_tokens: true      # Same value always gets same token within a session
+  batch_size: 100              # Max items in a batch request
+
+detection:
+  # Categories to ALWAYS redact (null = all enabled categories)
+  # Options: PII, PHI, FINANCIAL, NETWORK, CREDENTIAL, SENSITIVE
+  redact_categories: null
+
+  # Categories to skip (takes precedence over redact_categories)
+  # Example: skip DOMAIN if too many false positives
+  skip_categories:
+    - DOMAIN                   # Tends to have false positives; disable if noisy
+
+  # Individual patterns to disable (by name)
+  disabled_patterns:
+    - PERSON_FULL              # Aggressive name heuristic — disable if noisy
+    # - RACE_ETHNICITY         # Uncomment to skip sensitive-but-not-PII labels
+    # - RELIGION
+
+spacy:
+  # Model preference order (first available wins)
+  models:
+    - en_core_web_lg
+    - en_core_web_md
+    - en_core_web_sm
+
+logging:
+  level: INFO                  # DEBUG, INFO, WARNING, ERROR
+  format: "%(asctime)s %(levelname)s %(name)s: %(message)s"
+
+output:
+  # Where to write redacted samples
+  # Options: file, stdout, none
+  handler: stdout
+  file_path: redacted_output.jsonl
+
+compliance:
+  # Regulatory frameworks this service is configured to satisfy
+  frameworks:
+    - GDPR
+    - CCPA
+    - HIPAA
+  # HIPAA Safe Harbor: redact dates below this level
+  hipaa_date_granularity: month   # year | month | day
+  # Retain token mapping for audit (admin only — never expose to annotators)
+  audit_token_map: true

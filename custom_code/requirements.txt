@@ -1,0 +1,28 @@
+# ─── Core ────────────────────────────────────────────────────────────────────
+# No mandatory runtime dependencies beyond stdlib for the regex-only engine.
+
+# ─── NLP / NER (recommended — significantly improves name/org/location detection)
+spacy>=3.7,<4.0
+# After install, also run:
+#   python -m spacy download en_core_web_sm   # small (~12MB)
+#   python -m spacy download en_core_web_md   # medium (~45MB) — better accuracy
+#   python -m spacy download en_core_web_lg   # large (~750MB) — best accuracy
+
+# ─── REST API
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+pydantic>=2.0
+
+# ─── Async / concurrency
+anyio>=4.0
+
+# ─── Testing
+pytest>=8.0
+pytest-asyncio>=0.23
+httpx>=0.27          # for TestClient in FastAPI tests
+
+# ─── Optional: streaming integrations
+# kafka-python>=2.0   # for Kafka consumer hook
+# redis>=5.0          # for Redis Queue hook
+# celery>=5.3         # for Celery task queue
+# motor>=3.3          # for async MongoDB output
