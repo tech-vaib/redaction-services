@@ -1,0 +1,259 @@
+# .github/workflows/ci-cd.yml
+# ─────────────────────────────────────────────────────────────────────────────
+# CI/CD Pipeline:
+#   PR  → lint + unit tests + integration tests + accuracy tests
+#   main → all tests + Docker build + push to ACR + deploy to staging
+#   tag → deploy to production
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: CI/CD
+
+on:
+  push:
+    branches: [main, develop]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+
+env:
+  PYTHON_VERSION: "3.11"
+  IMAGE_NAME: pii-redaction
+  ACR_NAME: ${{ secrets.ACR_NAME }}
+  AKS_CLUSTER: ${{ secrets.AKS_CLUSTER }}
+  AKS_RESOURCE_GROUP: ${{ secrets.AKS_RESOURCE_GROUP }}
+  NAMESPACE: redaction
+
+jobs:
+  # ── Lint & type check ───────────────────────────────────────────────────────
+  lint:
+    name: Lint & Type Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - run: pip install ruff mypy types-pyyaml
+      - run: ruff check src/ tests/
+      - run: mypy src/ --ignore-missing-imports
+
+  # ── Unit tests ──────────────────────────────────────────────────────────────
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Download spaCy model
+        run: python -m spacy download en_core_web_sm
+
+      - name: Run unit tests
+        env:
+          REDACT_SPACY_MODEL: en_core_web_sm   # sm for CI speed
+          REDACT_ENVIRONMENT: test
+          REDACT_LOG_JSON: "false"
+        run: |
+          pytest tests/unit/ -v --tb=short \
+            --cov=src --cov-report=xml --cov-report=term-missing \
+            --timeout=120 -x
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        with:
+          file: coverage.xml
+          fail_ci_if_error: false
+
+  # ── Integration tests ───────────────────────────────────────────────────────
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Download spaCy model
+        run: python -m spacy download en_core_web_sm
+
+      - name: Run integration tests
+        env:
+          REDACT_SPACY_MODEL: en_core_web_sm
+          REDACT_ENVIRONMENT: test
+          REDACT_LOG_JSON: "false"
+        run: |
+          pytest tests/integration/ -v --tb=short --timeout=180
+
+  # ── Accuracy tests ──────────────────────────────────────────────────────────
+  accuracy-tests:
+    name: Accuracy Tests (≥97% detection rate)
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt faker
+
+      - name: Download spaCy model
+        run: python -m spacy download en_core_web_lg  # lg for accuracy
+
+      - name: Run accuracy tests
+        env:
+          REDACT_SPACY_MODEL: en_core_web_lg
+          REDACT_ENVIRONMENT: test
+          REDACT_LOG_JSON: "false"
+        run: |
+          pytest tests/unit/test_accuracy.py -v --tb=short -s --timeout=300
+
+  # ── Docker build ────────────────────────────────────────────────────────────
+  docker-build:
+    name: Docker Build & Push
+    runs-on: ubuntu-latest
+    needs: [unit-tests, integration-tests]
+    if: github.event_name == 'push'
+    outputs:
+      image_tag: ${{ steps.meta.outputs.version }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=sha-,format=short
+
+      - name: Login to ACR
+        uses: azure/docker-login@v2
+        with:
+          login-server: ${{ env.ACR_NAME }}.azurecr.io
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/docker/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64
+
+  # ── Deploy to staging ────────────────────────────────────────────────────────
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: docker-build
+    if: github.ref == 'refs/heads/main'
+    environment:
+      name: staging
+      url: https://redaction-staging.yourdomain.com
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Set AKS context
+        uses: azure/aks-set-context@v4
+        with:
+          resource-group: ${{ env.AKS_RESOURCE_GROUP }}
+          cluster-name: ${{ env.AKS_CLUSTER }}
+
+      - name: Deploy via Helm
+        run: |
+          helm upgrade --install redaction ./deploy/helm \
+            --namespace ${{ env.NAMESPACE }}-staging \
+            --create-namespace \
+            --set image.repository=${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }} \
+            --set image.tag=${{ needs.docker-build.outputs.image_tag }} \
+            --set env.REDACT_ENVIRONMENT=staging \
+            --set replicaCount=2 \
+            --wait --timeout 10m
+
+      - name: Run smoke tests against staging
+        run: |
+          STAGING_URL="https://redaction-staging.yourdomain.com"
+          curl -sf $STAGING_URL/health
+          curl -sf -X POST $STAGING_URL/v1/redact \
+            -H "Content-Type: application/json" \
+            -d '{"text":"smoke test john@test.com"}' | grep -q "redacted_text"
+          echo "✅ Smoke tests passed"
+
+  # ── Deploy to production ─────────────────────────────────────────────────────
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [docker-build, deploy-staging]
+    if: startsWith(github.ref, 'refs/tags/v')
+    environment:
+      name: production
+      url: https://redaction.yourdomain.com
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Set AKS context
+        uses: azure/aks-set-context@v4
+        with:
+          resource-group: ${{ env.AKS_RESOURCE_GROUP }}
+          cluster-name: ${{ env.AKS_CLUSTER }}
+
+      - name: Deploy via Helm (production)
+        run: |
+          helm upgrade --install redaction ./deploy/helm \
+            --namespace ${{ env.NAMESPACE }} \
+            --create-namespace \
+            --set image.repository=${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }} \
+            --set image.tag=${{ needs.docker-build.outputs.image_tag }} \
+            --set env.REDACT_ENVIRONMENT=production \
+            --set replicaCount=3 \
+            --wait --timeout 15m
+
+      - name: Verify rollout
+        run: |
+          kubectl rollout status deployment/redaction-redaction \
+            -n ${{ env.NAMESPACE }} --timeout=5m
+
+      - name: Post-deploy smoke test
+        run: |
+          PROD_URL="https://redaction.yourdomain.com"
+          curl -sf $PROD_URL/health
+          echo "✅ Production deploy verified"

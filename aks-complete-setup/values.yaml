@@ -1,0 +1,62 @@
+# deploy/helm/values.yaml — Helm chart values for AKS deployment
+# Override per environment:
+#   helm upgrade --install redaction ./deploy/helm \
+#     -f deploy/helm/values-prod.yaml \
+#     --namespace redaction --create-namespace
+
+image:
+  repository: YOUR_ACR.azurecr.io/pii-redaction
+  tag: "2.0.0"
+  pullPolicy: Always
+
+replicaCount: 3
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8000
+
+ingress:
+  enabled: true
+  className: nginx
+  host: redaction.yourdomain.com
+  tls: true
+  certIssuer: letsencrypt-prod
+  annotations:
+    nginx.ingress.kubernetes.io/limit-rps: "100"
+    nginx.ingress.kubernetes.io/proxy-body-size: "1m"
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 20
+  targetCPUUtilizationPercentage: 60
+  targetMemoryUtilizationPercentage: 75
+
+resources:
+  requests:
+    cpu: 500m
+    memory: 1.5Gi
+  limits:
+    cpu: 2000m
+    memory: 3Gi
+
+env:
+  REDACT_ENVIRONMENT: production
+  REDACT_LOG_JSON: "true"
+  REDACT_SPACY_MODEL: en_core_web_lg
+  REDACT_PIPELINE_WORKERS: "8"
+  REDACT_PRESIDIO_SCORE_THRESHOLD: "0.35"
+  REDACT_METRICS_ENABLED: "true"
+  REDACT_RESULT_CACHE_ENABLED: "true"
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+
+monitoring:
+  prometheus:
+    enabled: true
+    scrapeInterval: 10s
+  grafana:
+    enabled: true

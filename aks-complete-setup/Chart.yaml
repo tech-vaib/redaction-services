@@ -1,0 +1,18 @@
+# deploy/helm/Chart.yaml
+apiVersion: v2
+name: pii-redaction
+description: Production-grade PII/PHI redaction service for LLM traffic
+type: application
+version: 2.0.0
+appVersion: "2.0.0"
+keywords:
+  - pii
+  - phi
+  - redaction
+  - llm
+  - privacy
+  - hipaa
+  - gdpr
+maintainers:
+  - name: Platform Team
+    email: platform@yourorg.com

@@ -1,0 +1,12 @@
+# requirements-dev.txt — Dev + test dependencies
+-r requirements.txt
+pytest>=8.2
+pytest-asyncio>=0.23
+pytest-cov>=5.0
+pytest-xdist>=3.5
+pytest-timeout>=2.3
+faker>=25.0
+locust>=2.28
+ruff>=0.4
+mypy>=1.10
+types-pyyaml
